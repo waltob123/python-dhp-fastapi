@@ -1,134 +1,59 @@
-from enum import Enum
-from typing import Annotated, Optional
+from datetime import datetime, timezone
+from typing import Annotated
 
-from fastapi import FastAPI, Body, Path
-from pydantic import BaseModel, field_validator
+from fastapi import FastAPI, Body, Path, Query, status, HTTPException
 
+from python_fastapi.helper_functions import get_user_from_list, check_email_uniqueness
+from python_fastapi.models import User
+from python_fastapi.schemas import ResponseSchema, ReadUserSchema, CreateUserSchema, UpdateUserSchema
+from python_fastapi.users_data import users
+from python_fastapi.utils import offset_calculator
 
 app = FastAPI()
 
 
-VALID_EMAIL_DOMAIN = "ghs.gov.gh"
-
-
-class GenderEnum(Enum):
-    MALE = "male"
-    FEMALE = "female"
-
-
-class CreateUserSchema(BaseModel):
-    email: str
-    first_name: str
-    last_name: str
-    other_names: Optional[str] = None
-    age: int
-    gender: str
-
-    @field_validator("other_names", "last_name", "first_name")
-    @classmethod
-    def validate_other_names(cls, value: str) -> str:
-        if len(value) < 3:
-            raise ValueError("Name must be at least 3 characters long")
-        if not value.isalpha():
-            raise ValueError("Name must contain only letters")
-        return value
-
-    @field_validator("email")
-    @classmethod
-    def validate_email_domain(cls, email: str) -> str:
-        if not email.endswith(VALID_EMAIL_DOMAIN):
-            raise ValueError(f"Email must end with {VALID_EMAIL_DOMAIN}")
-        return email
-
-    @field_validator("gender")
-    @classmethod
-    def validate_gender(cls, gender: str) -> str:
-        if not GenderEnum.__contains__(gender.lower()):
-            raise ValueError("Gender must be one of these: {gender_list}".format(
-                gender_list=[value.value for key, value in GenderEnum.__members__.items()])
-            )
-        return gender.lower()
-
-    @field_validator("age")
-    @classmethod
-    def validate_age(cls, age: int) -> int:
-        if age < 0:
-            raise ValueError("Age must be a positive number")
-        return age
-
-    def to_dict(self) -> dict:
-        return {
-            "email": self.email,
-            "first_name": self.first_name,
-            "last_name": self.last_name,
-            "other_names": self.other_names,
-            "age": self.age,
-            "gender": self.gender
-        }
-
-
-
-def check_email_uniqueness(email: str, list_of_users: list[dict]) -> bool:
-    """
-    Check if email is unique
-
-    :param email: str
-    :param list_of_users: list[dict]
-    :return: bool
-    """
-    for user in list_of_users:
-        if user.get("email") == email:
-            return False
-    return True
-
-
-def get_user_from_list(user_id: int, users_list: list[dict]) -> dict | None:
-    """
-    Get user from list of users
-
-    :param user_id: the id of the user to get
-    :param users_list: the list of users to search from
-    :return: dict
-    """
-    for user in users_list:
-        if user.get("id") == user_id:
-            return user
-    return None
-
-users = [
-    {
-        "id": 1,
-        "name": "John Doe",
-        "gender": "Male",
-        "email": "john.doe@gmail.com"
-    },
-    {
-        "id": 2,
-        "name": "Kwame Atta",
-        "gender": "Male",
-        "email": "kwame.atta@gmail.com"
-    },
-    {
-        "id": 3,
-        "name": "Mary Jane",
-        "gender": "Female",
-        "email": "mary.jane@gmail.com"
-    }
-]
-
-
-@app.get(path="/api/v1/users", status_code=200)
-def get_all_users() -> list[dict]:
+@app.get(path="/api/v1/users", status_code=status.HTTP_200_OK, response_model=ResponseSchema)
+def get_all_users(
+    page: Annotated[int, Query(description="The page number to get", ge=1)] = None,
+    page_size: Annotated[int, Query(description="The number of items to get per page", ge=1)] = None,
+    is_active: Annotated[bool, Query(description="Filter by active status")] = None,
+) -> ResponseSchema:
     """
     Get all users
 
     :return: dict
     """
-    return users
+    response = []
+
+    if is_active is not None:
+        for user in users:
+            if user["is_active"] == is_active:
+                response.append(user)
+
+    if page and page_size:
+        offset = offset_calculator(page, page_size)
+        response = response[offset:offset + page_size]
+        return ResponseSchema(
+            success=True,
+            message="Users retrieved successfully",
+            data=[ReadUserSchema(**user).model_dump() for user in response],
+            extras={
+                "page": page,
+                "page_size": page_size,
+                "total_users": len(users)
+            }
+        )
+    return ResponseSchema(
+        success=True,
+        message="Users retrieved successfully",
+        data=[ReadUserSchema(**user).model_dump() for user in users],
+    )
 
 
-@app.get(path="/api/v1/users/{user_id}", status_code=200)
-def get_user(user_id: Annotated[int, Path(description="The id of the user to get")]) -> dict:
+
+
+@app.get(path="/api/v1/users/{user_id}", status_code=status.HTTP_200_OK, response_model=ResponseSchema)
+def get_user(user_id: Annotated[int, Path(description="The id of the user to get")]) -> ResponseSchema:
     """
     Get user by id
 
@@ -137,12 +62,16 @@ def get_user(user_id: Annotated[int, Path(description="The id of the user to get
     """
     user = get_user_from_list(user_id, users)
     if not user:
-        return {"error": "Not Found"}
-    return user
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    return ResponseSchema(
+            success=True,
+            message="Users retrieved successfully",
+            data=ReadUserSchema(**user).model_dump()
+        )
 
 
-@app.post(path="/api/v1/users", status_code=201)
-def create_user(user: CreateUserSchema = Body()) -> dict:
+@app.post(path="/api/v1/users", status_code=status.HTTP_201_CREATED, response_model=ResponseSchema)
+def create_user(user: CreateUserSchema = Body()) -> ResponseSchema:
     """
     Create a new user
 
@@ -151,18 +80,20 @@ def create_user(user: CreateUserSchema = Body()) -> dict:
     """
     # check if email is unique
     if not check_email_uniqueness(user.email, users):
-        return {"error": "Email already exists"}
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists.")
 
-    user_dict = user.to_dict()
+    new_user = User(**user.model_dump())
+    User.save(new_user.to_dict(), users)
 
-    user_dict["id"] = len(users) + 1
-    users.append(user_dict)
+    return ResponseSchema(
+            success=True,
+            message="User created successfully",
+            data=ReadUserSchema(**new_user.to_dict()).model_dump()
+    )
 
-    return user_dict
 
-
-@app.put(path="/api/v1/users/{user_id}", status_code=200)
-def update_user(user_id: int = Path(), user_update_data: dict = Body()) -> dict:
+@app.put(path="/api/v1/users/{user_id}", status_code=status.HTTP_200_OK, response_model=ResponseSchema)
+def update_user(user_id: int = Path(), user_update_data: UpdateUserSchema = Body()) -> ResponseSchema:
     """
     Update user by id
 
@@ -173,20 +104,23 @@ def update_user(user_id: int = Path(), user_update_data: dict = Body()) -> dict:
     user_to_update = get_user_from_list(user_id, users)
 
     if not user_to_update:
-        return {"error": "Not Found"}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     # user_to_update.update(user_update_data)
-    for key, value in user_update_data.items():
+    for key, value in user_update_data.model_dump().items():
         if key in user_to_update.keys():
             user_to_update[key] = value
-        else:
-            print("skip")
+    user_to_update["updated_at"] = str(datetime.now(tz=timezone.utc))
 
-    return user_to_update
+    return ResponseSchema(
+            success=True,
+            message="User created successfully",
+            data=ReadUserSchema(**user_to_update).model_dump()
+    )
 
 
-@app.patch(path="/api/v1/users/{user_id}", status_code=200)
-def update_user(user_id: int = Path(), user_update_data: dict = Body()) -> dict:
+@app.patch(path="/api/v1/users/{user_id}", status_code=status.HTTP_200_OK, response_model=ResponseSchema)
+def update_user(user_id: int = Path(), user_update_data: UpdateUserSchema = Body()) -> ResponseSchema:
     """
     Update user by id
 
@@ -197,19 +131,22 @@ def update_user(user_id: int = Path(), user_update_data: dict = Body()) -> dict:
     user_to_update = get_user_from_list(user_id, users)
 
     if not user_to_update:
-        return {"error": "Not Found"}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     # user_to_update.update(user_update_data)
-    for key, value in user_update_data.items():
+    for key, value in user_update_data.model_dump().items():
         if key in user_to_update.keys():
             user_to_update[key] = value
-        else:
-            print("skip")
+    user_to_update["updated_at"] = str(datetime.now(tz=timezone.utc))
 
-    return user_to_update
+    return ResponseSchema(
+        success=True,
+        message="User created successfully",
+        data=ReadUserSchema(**user_to_update).model_dump()
+    )
 
 
-@app.delete(path="/api/v1/users/{user_id}", status_code=204)
+@app.delete(path="/api/v1/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(user_id: int = Path()) -> None:
     """
     Delete user by id
@@ -220,12 +157,13 @@ def delete_user(user_id: int = Path()) -> None:
     user_to_delete = get_user_from_list(user_id, users)
 
     if not user_to_delete:
-        raise Exception("User not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
         # return {"error": "Not Found"}
 
     # Alternate method to delete user
     # del users[users.index(user_to_delete)]
-    users.remove(user_to_delete)
+    # users.remove(user_to_delete)
+    user_to_delete["deleted_at"] = str(datetime.now(tz=timezone.utc))
 
     # return {"message": "User deleted successfully"}
     return None
