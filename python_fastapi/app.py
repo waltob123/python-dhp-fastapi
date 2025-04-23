@@ -1,55 +1,56 @@
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import FastAPI, Body, Path, Query, status, HTTPException
+from fastapi import FastAPI, Body, Path, Query, status, HTTPException, Request
 
-from python_fastapi.helper_functions import get_user_from_list, check_email_uniqueness
-from python_fastapi.models import User
+from python_fastapi.helper_functions import get_user_from_list
 from python_fastapi.schemas import ResponseSchema, ReadUserSchema, CreateUserSchema, UpdateUserSchema
+from python_fastapi.services import get_all_users_from_list, get_user_by_id, create_new_user, update_a_user
 from python_fastapi.users_data import users
-from python_fastapi.utils import offset_calculator
+from python_fastapi.utils import generate_id
 
 app = FastAPI()
 
 
+@app.middleware("http")
+async def process_request_and_response(request: Request, call_next):
+    """
+    Middleware to process request and response
+
+    :param request: Request
+    :param call_next: Callable
+    :return: Response
+    """
+    response = await call_next(request)
+    response.headers["X-Response-ID"] = str(generate_id())
+    return response
+
 @app.get(path="/api/v1/users", status_code=status.HTTP_200_OK, response_model=ResponseSchema)
 def get_all_users(
+    request: Request,
     page: Annotated[int, Query(description="The page number to get", ge=1)] = None,
     page_size: Annotated[int, Query(description="The number of items to get per page", ge=1)] = None,
     is_active: Annotated[bool, Query(description="Filter by active status")] = None,
+    is_deleted: Annotated[bool, Query(description="Filter by deleted status")] = None,
 ) -> ResponseSchema:
     """
     Get all users
 
     :return: dict
     """
-    response = []
+    response = get_all_users_from_list(
+        users=users, page=page, page_size=page_size, is_active=is_active, is_deleted=is_deleted)
 
-    if is_active is not None:
-        for user in users:
-            if user["is_active"] == is_active:
-                response.append(user)
-
-    if page and page_size:
-        offset = offset_calculator(page, page_size)
-        response = response[offset:offset + page_size]
-        return ResponseSchema(
-            success=True,
-            message="Users retrieved successfully",
-            data=[ReadUserSchema(**user).model_dump() for user in response],
-            extras={
-                "page": page,
-                "page_size": page_size,
-                "total_users": len(users)
-            }
-        )
     return ResponseSchema(
         success=True,
         message="Users retrieved successfully",
-        data=[ReadUserSchema(**user).model_dump() for user in users],
+        data=[ReadUserSchema(**user).model_dump() for user in response],
+        extras={
+            "page": page,
+            "page_size": page_size,
+            "total_users": len(users)
+        }
     )
-
-
 
 
 @app.get(path="/api/v1/users/{user_id}", status_code=status.HTTP_200_OK, response_model=ResponseSchema)
@@ -60,9 +61,7 @@ def get_user(user_id: Annotated[int, Path(description="The id of the user to get
     :param user_id: int
     :return: dict
     """
-    user = get_user_from_list(user_id, users)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    user = get_user_by_id(user_id, users)
     return ResponseSchema(
             success=True,
             message="Users retrieved successfully",
@@ -78,12 +77,7 @@ def create_user(user: CreateUserSchema = Body()) -> ResponseSchema:
     :param user: dictionary containing user data
     :return: dict
     """
-    # check if email is unique
-    if not check_email_uniqueness(user.email, users):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists.")
-
-    new_user = User(**user.model_dump())
-    User.save(new_user.to_dict(), users)
+    new_user = create_new_user(user, users)
 
     return ResponseSchema(
             success=True,
@@ -101,21 +95,12 @@ def update_user(user_id: int = Path(), user_update_data: UpdateUserSchema = Body
     :param user_update_data: the new data to update the user with
     :return: dict
     """
-    user_to_update = get_user_from_list(user_id, users)
-
-    if not user_to_update:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-
-    # user_to_update.update(user_update_data)
-    for key, value in user_update_data.model_dump().items():
-        if key in user_to_update.keys():
-            user_to_update[key] = value
-    user_to_update["updated_at"] = str(datetime.now(tz=timezone.utc))
+    updated_user = update_a_user(user_id, user_update_data, users)
 
     return ResponseSchema(
             success=True,
             message="User created successfully",
-            data=ReadUserSchema(**user_to_update).model_dump()
+            data=ReadUserSchema(**updated_user.to_dict()).model_dump()
     )
 
 
@@ -128,21 +113,12 @@ def update_user(user_id: int = Path(), user_update_data: UpdateUserSchema = Body
     :param user_update_data: the new data to update the user with
     :return: dict
     """
-    user_to_update = get_user_from_list(user_id, users)
-
-    if not user_to_update:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-
-    # user_to_update.update(user_update_data)
-    for key, value in user_update_data.model_dump().items():
-        if key in user_to_update.keys():
-            user_to_update[key] = value
-    user_to_update["updated_at"] = str(datetime.now(tz=timezone.utc))
+    updated_user = update_a_user(user_id, user_update_data, users)
 
     return ResponseSchema(
-        success=True,
-        message="User created successfully",
-        data=ReadUserSchema(**user_to_update).model_dump()
+            success=True,
+            message="User created successfully",
+            data=ReadUserSchema(**updated_user.to_dict()).model_dump()
     )
 
 

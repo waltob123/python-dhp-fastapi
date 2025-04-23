@@ -12,15 +12,7 @@ class BaseReadSchema(BaseModel):
     updated_at: str
 
 class BaseUserSchema(BaseModel):
-    email: str
     username: str
-
-    @field_validator("email")
-    @classmethod
-    def validate_email_domain(cls, email: str) -> str:
-        if not email.endswith(VALID_EMAIL_DOMAIN):
-            raise ValueError(f"Email must end with {VALID_EMAIL_DOMAIN}")
-        return email
 
     @field_validator("username")
     @classmethod
@@ -31,7 +23,15 @@ class BaseUserSchema(BaseModel):
 
 
 class CreateUserSchema(BaseUserSchema):
+    email: str
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_domain(cls, email: str) -> str:
+        if not email.endswith(VALID_EMAIL_DOMAIN):
+            raise ValueError(f"Email must end with {VALID_EMAIL_DOMAIN}")
+        return email
 
     @field_validator("password")
     @classmethod
@@ -47,15 +47,8 @@ class ReadUserSchema(BaseReadSchema, BaseUserSchema):
     is_active: bool
 
 
-class UpdateUserSchema(BaseModel):
-    username: str
-
-    @field_validator("username")
-    @classmethod
-    def validate_username(cls, value: str) -> str:
-        if len(value) < 4:
-            raise ValueError("Name must be at least 3 characters long")
-        return value
+class UpdateUserSchema(BaseUserSchema):
+    pass
 
 
 class ResponseSchema(BaseModel):
